@@ -9,7 +9,7 @@
 - `config.example.json`：全部使用占位符，监控和 ETA 默认关闭。
 - `test_eta.py`：隔离回归检查，使用 Fake Notifier，不访问网络、不发邮件。
 
-两个运行模块来自 2026-11-06 核对的服务器实际部署版本，源码未改动。`train_watch.py` SHA256 为 `d0ecb72baa1ecc8ae9b06b92e52ee36e9ef7a4b71730830ed84876738db8f9ce`；`rns_eta.py` 为 `e971843155a1519a82e691d24ebdf013ff0e5f1ac4c0e2d8608a6e90f1723c90`。主程序顶部旧注释的“每小时”仅为示例，执行频率由 cron 决定；下面使用每 5 分钟。
+主程序顶部旧注释的“每小时”仅为示例，执行频率由 cron 决定；下面使用每 5 分钟。
 
 ## GitHub 仓库与通知设置
 
