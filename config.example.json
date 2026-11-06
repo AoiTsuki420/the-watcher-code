@@ -7,7 +7,7 @@
   },
   "email": {"enabled": false},
   "heartbeat": {"enabled": false},
-  "alerts": {"reminder_hours": 12, "max_read_bytes": 8388608, "max_hits": 3},
+  "alerts": {"reminder_hours": 12, "auto_remove_stalled_hours": 48, "max_read_bytes": 8388608, "max_hits": 3},
   "logs": [
     {
       "name": "training",

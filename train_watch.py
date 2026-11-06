@@ -16,6 +16,7 @@
 import argparse
 import fcntl
 import json
+import math
 import os
 import re
 import subprocess
@@ -130,6 +131,29 @@ def excerpt(lines, idx, ctx=8):
     return "\n".join(lines[a:b])[:3000]
 
 
+def retire_stalled_target(lc, active, default_hours, now=None):
+    """Disable monitoring after a continuous stall; never delete the log."""
+    now = time.time() if now is None else now
+    name = lc.get("name") or os.path.basename(lc.get("path") or "log")
+    stall = active.get(name + ":stall")
+    if not lc.get("enabled") or not stall:
+        return False
+    try:
+        hours = float(lc.get("auto_remove_stalled_hours", default_hours))
+        since = float(stall["since"])
+        if not math.isfinite(hours) or not math.isfinite(since) or hours < 0:
+            raise ValueError("invalid stall retirement policy")
+    except (ValueError, TypeError, KeyError, OverflowError):
+        log("Invalid auto_remove_stalled_hours; automatic removal skipped")
+        return False
+    if hours == 0 or now - since <= hours * 3600:
+        return False
+    lc["enabled"] = False
+    lc["auto_removed"] = {"reason": "stall_timeout", "at": now,
+                          "stall_since": since, "threshold_hours": hours}
+    return True
+
+
 class Notifier(object):
     """GitHub Issue 通知；未配置或 dry-run 时降级为本地 outbox/dry-run 打印。"""
 
@@ -140,6 +164,9 @@ class Notifier(object):
         self.proxy = (gh.get("proxy") or "").strip()
         self.dry_run = dry_run
         self.base = base
+        # Names are explicitly allowed in notifications; no paths or log text.
+        self.notification_names = [str(lc["name"]) for lc in (cfg.get("logs") or [])
+                                   if lc.get("name")]
         token_file = expand(gh.get("token_file") or "github.token")
         if not os.path.isabs(token_file):
             token_file = os.path.join(base, token_file)
@@ -235,7 +262,40 @@ class Notifier(object):
             log("!! 邮件发送失败: %s" % exc)
             self._local("邮件发送失败: " + subject, "%s\n\n%s" % (exc, body))
 
+    def _safe_message(self, title, body):
+        """Build outbound text from allowed names and fixed status labels only."""
+        text = title + "\n" + body
+        if "暂停或移除" in text or "自动移出" in text:
+            status = "已移出监控"
+        elif "已恢复" in text:
+            status = "已恢复"
+        elif "测试" in title:
+            status = "通知测试"
+        elif "预计剩余" in text or "预计接近结束" in text:
+            status = "预计接近完成"
+        elif "已开始" in text:
+            status = "已开始"
+        elif "巡检正常" in text:
+            status = "正常"
+        elif "持续告警" in text:
+            status = "持续告警"
+        elif "告警" in text:
+            status = "告警"
+        else:
+            status = "状态更新"
+        names = list(dict.fromkeys(name for name in self.notification_names if name in text))
+        lines = ["任务：" + ("、".join(names) if names else "监控任务"), "状态：" + status]
+        if status in ("告警", "持续告警"):
+            rules = [label for label in RULE_LABELS.values() if label in text]
+            if rules:
+                lines.append("类型：" + "、".join(rules))
+        # Preserve opaque ETA idempotency markers, never raw run identifiers.
+        markers = re.findall(r"<!-- watcher-eta:([0-9a-f]{64}) -->", body)
+        lines.extend("<!-- watcher-eta:" + marker + " -->" for marker in markers)
+        return "监控提醒：" + status, "\n\n".join(lines)
+
     def create_issue(self, title, body):
+        title, body = self._safe_message(title, body)
         self._send_email(title, body)
         if self.dry_run:
             log("[dry-run] 将创建 Issue: %s" % title)
@@ -247,15 +307,14 @@ class Notifier(object):
         payload = {"title": title, "body": body}
         if self.assignee:
             payload["assignees"] = [self.assignee]
-            if ("@" + self.assignee) not in body:
-                payload["body"] = body + "\n\ncc @%s" % self.assignee
         data = self._api("POST", "/repos/%s/issues" % self.repo, payload)
         number = int(data.get("number") or 0)
         log("已创建 Issue #%s: %s" % (number, title))
         return number
 
     def comment(self, number, body):
-        self._send_email("[更新] train_watch", body)
+        title, body = self._safe_message("监控状态更新", body)
+        self._send_email(title, body)
         if self.dry_run:
             log("[dry-run] 将评论 Issue #%s" % number)
             print("----- 评论预览 -----\n%s\n--------------------" % body[:1500])
@@ -282,26 +341,11 @@ class Notifier(object):
 
 
 def render_alert(items, tails, heading):
+    # Detailed matches remain in local state; notifications use affected tasks only.
     out = ["## " + heading, ""]
-    for it in items:
-        out.append("- **%s** · %s" % (it["log"], RULE_LABELS.get(it["rule"], it["rule"])))
-        out.append("  - 首次发现: %s" % ts_str(it.get("since")))
-        if it.get("matched"):
-            out.append("  - 详情: `%s`" % str(it["matched"])[:300])
-        if it.get("excerpt"):
-            out.append("")
-            out.append("```text")
-            out.extend(str(it["excerpt"]).splitlines()[:20])
-            out.append("```")
-        if it.get("path"):
-            out.append("  - 日志: `%s`" % it["path"])
-        out.append("")
-    for name, tail in tails:
-        out.append("### %s · 日志末尾" % name)
-        out.append("```text")
-        out.extend(tail[-15:])
-        out.append("```")
-        out.append("")
+    for item in items:
+        out.append("- **%s** · %s" %
+                   (item["log"], RULE_LABELS.get(item["rule"], "告警")))
     return "\n".join(out)
 
 
@@ -348,6 +392,7 @@ def main():
     resolved = []   # 本轮恢复的规则 key
     started = []    # 本轮"从停滞/空开始写入"的日志
     tails = []      # [(显示名, 末尾行)]
+    auto_removed = []
 
     for lc in cfg.get("logs") or []:
         if not lc.get("enabled"):
@@ -457,7 +502,15 @@ def main():
             del active[key]
             resolved.append(key)
 
+        if retire_stalled_target(lc, active, alerts_cfg.get("auto_remove_stalled_hours", 0)):
+            auto_removed.append(name)
+            log("%sRemoved stalled target from monitoring: %s" %
+                ("[dry-run] " if args.dry_run else "", name))
+            continue
         tails.append((name, read_tail(path)))
+
+    if auto_removed and not args.dry_run:
+        save_json(os.path.join(base, "config.json"), cfg)
 
     configured_names = {lc.get("name") or os.path.basename(lc.get("path") or "log")
                         for lc in (cfg.get("logs") or []) if lc.get("enabled", True)}
@@ -473,7 +526,7 @@ def main():
     state["last_run_ts"] = time.time()
 
     incident = state.get("incident")
-    notify_keys = list(newly)
+    notify_keys = [key for key in newly if key in active]
     if not notify_keys and active and incident is None:
         notify_keys = list(active)  # 上一轮通知失败，补发
 
@@ -504,7 +557,9 @@ def main():
                 names = "、".join(sorted({RULE_LABELS.get(k.split(":")[-1], k)
                                           for k in incident.get("rules_ever", [])}))
                 tail_text = "\n".join(tails[0][1][-5:]) if tails else "(无)"
-                msg = "✅ 已恢复：%s\n\n最新日志（%s）:\n```text\n%s\n```" % (names, ts_str(), tail_text)
+                task_names = sorted({key.rsplit(":", 1)[0]
+                                     for key in incident.get("rules_ever", [])})
+                msg = "✅ 已恢复：%s\n任务：%s" % (names, "、".join(task_names))
             notifier.comment(incident["number"], msg)
             notifier.close(incident["number"])
             state.pop("incident", None)
@@ -514,6 +569,10 @@ def main():
                              render_alert(items, tails, "⏰ 持续告警提醒（每 %.0f 小时）" % reminder_hours))
             incident["last_comment_ts"] = time.time()
             state["incident"] = incident
+
+    if auto_removed and active and (state.get("incident") or {}).get("number"):
+        notifier.comment(state["incident"]["number"],
+                         "自动移出监控：" + "、".join(auto_removed))
 
     if started:
         names = "、".join(s["log"] for s in started)
