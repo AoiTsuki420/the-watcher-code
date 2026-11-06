@@ -23,7 +23,6 @@ import time
 import traceback
 import urllib.request
 from datetime import datetime
-from rns_eta import check_eta
 
 DEFAULT_CRASH_PATTERNS = [
     r"Traceback \(most recent call last\)",
@@ -552,8 +551,10 @@ def main():
             state["heartbeat_last"] = today
 
     for lc in (cfg.get("logs") or []):
-        check_eta(lc, state, notifier, dry_run=args.dry_run,
-                  persist=lambda: save_json(state_path, state), logger=log)
+        if lc.get("enabled") and (lc.get("eta_reminder") or {}).get("enabled"):
+            from eta import check_eta
+            check_eta(lc, state, notifier, dry_run=args.dry_run,
+                      persist=lambda: save_json(state_path, state), logger=log)
 
     if not args.dry_run:
         save_json(state_path, state)

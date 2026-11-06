@@ -23,10 +23,14 @@
       "eta_reminder": {
         "enabled": false,
         "run_key": "example-run",
-        "expected_total": 100000,
+        "threshold_seconds": 3600,
+        "window_seconds": 3600,
+        "min_window_seconds": 900,
+        "progress_timeout_seconds": 300,
+        "unit": "项",
         "progress_path": "/path/to/progress.json",
-        "active_path": "/path/to/ACTIVE.json",
-        "failure_path": "/path/to/FAILED.json"
+        "active_path": "",
+        "failure_path": ""
       }
     }
   ]
