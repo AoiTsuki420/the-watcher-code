@@ -51,6 +51,17 @@ class WarningTests(unittest.TestCase):
     def test_unhandled_traceback_remains_an_alert(self):
         self.assertTrue(self.hits(["Traceback (most recent call last):", "ValueError: invalid"])[0])
 
+    def test_fatal_python_error_and_nonzero_exit_are_alerts(self):
+        for text in ("Fatal Python error: Aborted", "exitcode: 1", "exitcode: -9", "exit code = 2"):
+            with self.subTest(text=text):
+                self.assertTrue(self.hits([text])[0])
+                self.assertEqual(self.hits(["[WARNING] an earlier warning", text])[0][0][0], 1)
+
+    def test_successful_exit_and_recovered_warning_remain_quiet(self):
+        for text in ("exitcode: 0", "exit code = 0", "[WARNING] exitcode: 1; recovered"):
+            with self.subTest(text=text):
+                self.assertFalse(self.hits([text])[0])
+
     def test_custom_failure_marker_is_preserved(self):
         self.assertTrue(self.hits(['{"error_type": "RuntimeError"}'],
                                   rule_patterns=[r'"error_type"\s*:'])[0])

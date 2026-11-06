@@ -91,6 +91,7 @@ python3 train_watch.py
 
 - 持久保存 inode、字节偏移和未完成行；处理日志轮转和截断。
 - 默认匹配 Python 异常、CUDA OOM、NCCL 错误，以及 loss 等指标的 NaN/Inf。可通过 `crash_patterns`、`nan_patterns` 覆盖默认正则。
+- 默认崩溃规则也识别 `Fatal Python error` 和非零 `exitcode` / `exit code`（例如 1、-9）；退出码 0 不告警。自定义 `crash_patterns` 会覆盖默认列表，应包含该文件实际使用的失败信号。
 - 普通 WARNING/WARN、Python Warning 和 `[skip data/sample/batch …]` 及其连续异常堆栈不通知。该上下文支持跨巡检保存，最多覆盖 256 行；新的日志级别或普通进度行会结束上下文，明确的进程失败标记仍会报警。可用 `nonfatal_patterns` 自定义额外的非致命上下文起始正则（覆盖默认 skip/Python Warning 正则，WARNING/WARN 仍识别）。这是日志文本判断，不能单凭某个异常词确认实验是否退出；堆栈以外独立出现的异常、实际数值异常、文件缺失和停滞仍按原规则处理。
 - `ignore_patterns` 在命中行及其后最多 24 行内匹配时抑制该命中；应使用窄规则，避免隐藏真实异常。
 - `stall_minutes` 控制停滞阈值，设为 0 可关闭。任意 `completion_files` 存在时抑制停滞告警，不会自动验证文件内容。

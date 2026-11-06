@@ -54,6 +54,8 @@ FATAL_EXIT = re.compile(
     r"(?i)\b(?:ChildFailedError|ProcessExitedException|Watchdog caught collective|Fatal Python error)\b"
     r"|^\s*(?:Killed|Segmentation fault|core dumped)\b"
     r"|\bexit(?:code| code)\s*[:=]\s*(?!0\b)-?[1-9]\d*\b")
+# These markers must both end inherited warning context and trigger an alert.
+DEFAULT_CRASH_PATTERNS.append(FATAL_EXIT.pattern)
 
 RULE_LABELS = {
     "crash": "崩溃/报错",
