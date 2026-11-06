@@ -8,7 +8,7 @@
 - `eta.py`：可选的通用任务剩余时间提醒，支持自定义阈值和计量单位。
 - `config.example.json`：全部使用占位符，监控和 ETA 默认关闭。
 - `install.py`：交互式安装配置和当前用户 cron，隐藏输入 token。
-- `test_eta.py`、`test_policy.py`、`test_install.py`：隔离回归检查，不访问真实 GitHub、不改真实 cron、不发邮件。
+- `test_eta.py`、`test_policy.py`、`test_install.py`、`test_warnings.py`：隔离回归检查，不访问真实 GitHub、不改真实 cron、不发邮件。
 
 主程序顶部旧注释的“每小时”仅为示例，执行频率由 cron 决定；下面使用每 5 分钟。
 
@@ -91,6 +91,7 @@ python3 train_watch.py
 
 - 持久保存 inode、字节偏移和未完成行；处理日志轮转和截断。
 - 默认匹配 Python 异常、CUDA OOM、NCCL 错误，以及 loss 等指标的 NaN/Inf。可通过 `crash_patterns`、`nan_patterns` 覆盖默认正则。
+- 普通 WARNING/WARN、Python Warning 和 `[skip data/sample/batch …]` 及其连续异常堆栈不通知。该上下文支持跨巡检保存，最多覆盖 256 行；新的日志级别或普通进度行会结束上下文，明确的进程失败标记仍会报警。可用 `nonfatal_patterns` 自定义额外的非致命上下文起始正则（覆盖默认 skip/Python Warning 正则，WARNING/WARN 仍识别）。这是日志文本判断，不能单凭某个异常词确认实验是否退出；堆栈以外独立出现的异常、实际数值异常、文件缺失和停滞仍按原规则处理。
 - `ignore_patterns` 在命中行及其后最多 24 行内匹配时抑制该命中；应使用窄规则，避免隐藏真实异常。
 - `stall_minutes` 控制停滞阈值，设为 0 可关闭。任意 `completion_files` 存在时抑制停滞告警，不会自动验证文件内容。
 - 文件消失告警仅在此前记录过该文件后触发。首次配置的路径不存在时不会立即报缺失，应先确认路径。
@@ -152,6 +153,7 @@ python3 -m py_compile train_watch.py eta.py test_eta.py
 python3 test_eta.py
 python3 -m unittest test_policy
 python3 -m unittest test_install
+python3 -m unittest test_warnings
 ```
 
 测试使用临时目录与 Fake Notifier，覆盖 ETA 门槛、过期数据、计数校验、失败重试、去重及真实主入口的暂停目标清理和 dry-run 状态保护。

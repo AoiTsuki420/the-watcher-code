@@ -42,6 +42,19 @@ DEFAULT_NAN_PATTERNS = [
     r"(?i)\b(?:iptm|ptm|plddt|gpde|ranking_score|affinity_pred)\b\s*:\s*(?:nan|inf)\b",
 ]
 
+DEFAULT_NONFATAL_PATTERNS = [
+    r"(?i)^\s*\[(?:skip|skipping)\s+(?:data|sample|batch)\b",
+    r"(?i)\b(?:UserWarning|RuntimeWarning|FutureWarning|DeprecationWarning):",
+]
+LOG_LEVEL = re.compile(
+    r"(?:^|[\s\[|])(WARNING|WARN|ERROR|CRITICAL|FATAL|INFO|DEBUG)(?=$|[\s\]:|])", re.I)
+EXCEPTION_LINE = re.compile(
+    r"^\s*(?:[\w.]+(?:Error|Exception|Warning)|Exception|KeyboardInterrupt|SystemExit)(?::|$)")
+FATAL_EXIT = re.compile(
+    r"(?i)\b(?:ChildFailedError|ProcessExitedException|Watchdog caught collective|Fatal Python error)\b"
+    r"|^\s*(?:Killed|Segmentation fault|core dumped)\b"
+    r"|\bexit(?:code| code)\s*[:=]\s*(?!0\b)-?[1-9]\d*\b")
+
 RULE_LABELS = {
     "crash": "崩溃/报错",
     "nan": "数值异常 (nan/inf)",
@@ -108,10 +121,41 @@ def read_tail(path, n=15, max_bytes=65536):
         return []
 
 
-def find_hits(lines, patterns, max_hits, ignore_patterns=None):
+def nonfatal_mask(lines, previous=None, patterns=None):
+    """Ignore warning/skip traceback blocks, carrying bounded context across polls.
+
+    A new log level or ordinary progress line ends the block. Explicit process
+    failure markers override inherited context, but not a warning on that line.
+    This classifies log text, not the actual scheduler/process state.
+    """
+    remaining = min(256, max(0, int((previous or {}).get("remaining", 0))))
+    patterns = DEFAULT_NONFATAL_PATTERNS if patterns is None else patterns
+    compiled = [re.compile(pattern) for pattern in patterns]
+    mask = set()
+    for index, line in enumerate(lines):
+        terminal = bool(EXCEPTION_LINE.match(line))
+        level = LOG_LEVEL.search(line[:160]) if not terminal else None
+        warning = level and level.group(1).upper() in ("WARNING", "WARN")
+        if warning or any(pattern.search(line) for pattern in compiled):
+            remaining = 256
+            mask.add(index)
+        elif FATAL_EXIT.search(line) or level:
+            remaining = 0
+        elif remaining and (line[:1].isspace() or terminal or
+                            line.startswith(("Traceback (", "During handling", "The above exception"))):
+            mask.add(index)
+            remaining -= 1
+        else:
+            remaining = 0
+    return mask, {"remaining": remaining}
+
+
+def find_hits(lines, patterns, max_hits, ignore_patterns=None, skip_indices=None):
     """在 lines 中找命中；若命中行向下 25 行内出现 ignore_patterns 的内容，视为良性跳过。"""
     hits = []
     for idx, line in enumerate(lines):
+        if skip_indices and idx in skip_indices:
+            continue
         for pat in patterns:
             if pat.search(line):
                 if ignore_patterns:
@@ -462,10 +506,13 @@ def main():
                              "mtime": st.st_mtime, "partial": partial, "size": st.st_size,
                              "active": active_state}
 
+        previous_context = prev_file.get("nonfatal_context") if prev_file and not rotated else None
+        skipped, context = nonfatal_mask(lines, previous_context, lc.get("nonfatal_patterns"))
+        files_state[name]["nonfatal_context"] = context
         n_lines = len(lines)
         for rule, pats in (("crash", crash_pats), ("nan", nan_pats)):
             key = name + ":" + rule
-            hits = find_hits(lines, pats, max_hits, ignore_pats)
+            hits = find_hits(lines, pats, max_hits, ignore_pats, skipped)
             if hits:
                 idx, matched = hits[0]
                 first_time = key not in active
