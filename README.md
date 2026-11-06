@@ -7,7 +7,8 @@
 - `train_watch.py`：增量日志巡检、告警状态管理和 GitHub/可选 SMTP 通知。
 - `eta.py`：可选的通用任务剩余时间提醒，支持自定义阈值和计量单位。
 - `config.example.json`：全部使用占位符，监控和 ETA 默认关闭。
-- `test_eta.py`、`test_policy.py`：ETA、停滞移出及通知隐私的隔离回归检查，不访问网络、不发邮件。
+- `install.py`：交互式安装配置和当前用户 cron，隐藏输入 token。
+- `test_eta.py`、`test_policy.py`、`test_install.py`：隔离回归检查，不访问真实 GitHub、不改真实 cron、不发邮件。
 
 主程序顶部旧注释的“每小时”仅为示例，执行频率由 cron 决定；下面使用每 5 分钟。
 
@@ -17,7 +18,42 @@
 
 在 GitHub 设置中为这个私有告警仓库创建细粒度个人访问令牌，仅选择该仓库并授予 Issues 读写权限；将其安全保存在运行服务器。然后在 GitHub 的通知设置中启用参与或被提及事件的邮件通知，确认接收邮箱。指派用户必须对目标仓库有权限；可用下面说明的手动通知测试验证链路。
 
-## 配置与运行
+## 交互式安装（推荐）
+
+先准备一个私有告警仓库和仅对该仓库授予 Issues 读写权限的 token，并确认服务器有 Python 3.8+、`crontab` 命令及正在运行的 cron/crond 服务。若系统未安装 cron，需要先由管理员安装启用；脚本不使用 sudo，也不更改系统服务。
+
+```sh
+git clone https://github.com/AoiTsuki420/the-watcher-code.git
+cd the-watcher-code
+python3 install.py
+```
+
+按提示填写：
+
+1. 独立运行目录，默认 `~/.local/train_watch`，必须位于 Git 仓库之外。
+2. 私有告警仓库、接收提醒的 GitHub 用户名及 token。token 隐藏输入，不出现在命令行或配置摘要中；支持 HTTP(S) 代理。代理留空时沿用已有配置或当前环境代理，并保存在本地配置中供 cron 使用；输入 `-` 则不使用代理。
+3. 任务名称、当前用户可读且已存在的日志文件路径，可一次添加多个目标。
+4. 停滞告警阈值（默认 60 分钟）、持续告警后移出监控的阈值（默认 48 小时）及巡检间隔（默认每 5 分钟）。两种阈值均可设为 0 关闭。
+5. 查看不含 token 的摘要，输入 `y` 完成安装。取消时不写配置或 cron。
+
+安装器只读验证仓库为 Private、Issues 已开启、令牌能读取 Issues、用户可被指派；不自动建仓或创建 token。只读验证无法证明 Issues 写权限，也不保证邮件入箱，仍需正确授予权限并启用 GitHub 邮件通知。
+
+确认后，脚本把两个运行模块复制到运行目录，生成 `config.json` 和独立的 `github.token`，目录权限为 `700`、受管文件为 `600`，并安装带标记的用户 cron。真实配置和 token 不写进 Git 仓库。普通监控从首次巡检时的日志末尾开始，ETA 默认关闭。
+
+重复运行安装器可保留已有目标和读取状态、添加新名称的目标、复用已有 token，并更新受管 cron，不会重复追加。修改已有目标请直接编辑运行目录的 `config.json`。如果发现已有手工配置的 Watcher cron，安装器会停止：先用 `crontab -l` 检查，在 `crontab -e` 中只移除你确认由本次安装接管的那条 Watcher 任务，再重跑安装器；其他 cron 任务保留。
+
+文件写入或 cron 更新失败时会尝试恢复原配置、源码、token 和 cron；若检测到并发修改则停止，避免覆盖。安装器不会重置 `state.json`、删除日志或自动发送测试邮件。安装完成后会显示显式使用运行目录的测试命令；需要验证邮件时手动执行该命令，它会创建并关闭测试 Issue。
+
+查看安装结果：
+
+```sh
+crontab -l
+tail -n 30 ~/.local/train_watch/watch.log
+```
+
+如果选择了自定义运行目录，请替换上面的日志路径。克隆目录后续 `git pull` 不会自动更新已安装副本；需要更新时，可将新版 `train_watch.py`、`eta.py` 复制到运行目录，保留本地配置、token 和状态。
+
+## 手动配置与运行
 
 将两个模块放在同一目录。源码目录与运行配置目录可以分开：
 
@@ -49,7 +85,7 @@ python3 train_watch.py
 */5 * * * * /usr/bin/python3 /absolute/path/the-watcher-code/train_watch.py >> /home/YOUR_USER/.local/train_watch/watch.log 2>&1
 ```
 
-运行用户须能读取目标日志，并能写入运行目录。锁会跳过重叠执行。`watch.log` 需要按本机策略轮转；脚本不自动安装 cron。
+运行用户须能读取目标日志，并能写入运行目录。锁会跳过重叠执行。`watch.log` 需要按本机策略轮转；上面的手动方式需要自己添加 cron，交互式安装器会自动添加。
 
 ## 检测与恢复
 
@@ -115,6 +151,7 @@ python3 train_watch.py
 python3 -m py_compile train_watch.py eta.py test_eta.py
 python3 test_eta.py
 python3 -m unittest test_policy
+python3 -m unittest test_install
 ```
 
 测试使用临时目录与 Fake Notifier，覆盖 ETA 门槛、过期数据、计数校验、失败重试、去重及真实主入口的暂停目标清理和 dry-run 状态保护。
