@@ -1,0 +1,19 @@
+# Local configuration and credentials
+config.json
+*.token
+*.password
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+# Runtime files and local staging
+state.json
+*.log
+.lock
+*.tmp
+__pycache__/
+*.py[cod]
+tmp/
+TESTED.json
+isolated_eta_test_*/

@@ -1,0 +1,33 @@
+{
+  "github": {
+    "repo": "OWNER/PRIVATE-ALERT-REPO",
+    "assignee": "YOUR-USERNAME",
+    "token_file": "github.token",
+    "proxy": ""
+  },
+  "email": {"enabled": false},
+  "heartbeat": {"enabled": false},
+  "alerts": {"reminder_hours": 12, "max_read_bytes": 8388608, "max_hits": 3},
+  "logs": [
+    {
+      "name": "training",
+      "enabled": false,
+      "path": "/path/to/training.log",
+      "start_at": "end",
+      "stall_minutes": 60,
+      "resolve_after_lines": 200,
+      "notify_on_start": false,
+      "process_pattern": "",
+      "ignore_patterns": [],
+      "completion_files": ["/path/to/DONE.json"],
+      "eta_reminder": {
+        "enabled": false,
+        "run_key": "example-run",
+        "expected_total": 100000,
+        "progress_path": "/path/to/progress.json",
+        "active_path": "/path/to/ACTIVE.json",
+        "failure_path": "/path/to/FAILED.json"
+      }
+    }
+  ]
+}
