@@ -20,6 +20,14 @@
       "process_pattern": "",
       "ignore_patterns": [],
       "completion_files": ["/path/to/DONE.json"],
+      "completion_notification": {
+        "enabled": false,
+        "run_key": "example-run",
+        "success_files": ["/path/to/SUCCEEDED.json"],
+        "failure_files": ["/path/to/FAILED.json"],
+        "require_all": true,
+        "notify_existing": false
+      },
       "eta_reminder": {
         "enabled": false,
         "run_key": "example-run",

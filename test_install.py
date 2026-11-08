@@ -182,7 +182,7 @@ class InstallTests(unittest.TestCase):
         log.write_text("healthy\n")
         destination = self.folder / "new-runtime"
         answers = [str(destination), "example/private", "example", "", "job",
-                   str(log), "60", "N", "48", "5", "N"]
+                   str(log), "60", "", "N", "48", "5", "N"]
         output = io.StringIO()
         with patch.object(setup.sys, "argv", ["install.py"]), \
                 patch.object(setup.sys.stdin, "isatty", return_value=True), \
@@ -201,7 +201,8 @@ class InstallTests(unittest.TestCase):
         log = self.folder / "job.log"
         log.write_text("healthy\n")
         answers = [str(self.runtime), "example/private", "example", "-", "new-job",
-                   str(log), "60", "N", "48", "5", "y"]
+                   str(log), "60", str(self.folder / "DONE"), str(self.folder / "FAILED"),
+                   "N", "48", "5", "y"]
         output, cron = io.StringIO(), [self.cron]
         apply = setup.apply_install
         with patch.object(setup.sys, "argv", ["install.py"]), \
@@ -218,6 +219,10 @@ class InstallTests(unittest.TestCase):
         config = json.loads((self.runtime / "config.json").read_text())
         self.assertEqual([item["name"] for item in config["logs"]], ["existing", "new-job"])
         self.assertEqual(config["github"]["proxy"], "")
+        self.assertTrue(config["logs"][-1]["completion_notification"]["enabled"])
+        self.assertFalse(config["logs"][-1]["completion_notification"]["notify_existing"])
+        self.assertEqual(config["logs"][-1]["completion_notification"]["success_files"],
+                         [str(self.folder / "DONE")])
         self.assertEqual((self.runtime / "state.json").read_bytes(), self.state)
         self.assertIn("train_watch.py", cron[0])
         self.assertIn("0 3 * * * backup", cron[0])

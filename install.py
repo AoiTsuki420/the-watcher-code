@@ -16,6 +16,7 @@ import tempfile
 import urllib.error
 import urllib.parse
 import urllib.request
+import uuid
 
 SOURCE = Path(__file__).resolve().parent
 
@@ -281,9 +282,20 @@ def main():
         if not path.is_file() or not os.access(str(path), os.R_OK):
             raise ValueError("日志文件必须存在且当前用户可读；请确认文件生成后重试")
         stall = number("多少分钟无更新后告警（0 关闭）", 60)
+        success = ask("正常完成标记文件路径（可留空；请填写只在成功结束时生成的文件）")
+        completion = {"enabled": False}
+        terminal_files = []
+        if success:
+            success = str(absolute_path(success))
+            failure = ask("失败标记文件路径（可留空；存在时不发完成通知）")
+            failures = [str(absolute_path(failure))] if failure else []
+            completion = dict(enabled=True, run_key=uuid.uuid4().hex, success_files=[success],
+                              failure_files=failures, require_all=True, notify_existing=False)
+            terminal_files = [success] + failures
         logs.append(dict(name=name, path=str(path), enabled=True, start_at="end",
                          stall_minutes=stall, resolve_after_lines=200, notify_on_start=False,
-                         completion_files=[], eta_reminder={"enabled": False}))
+                         completion_files=terminal_files, completion_notification=completion,
+                         eta_reminder={"enabled": False}))
         if ask("继续添加其他日志？y/N", "N").lower() not in ("y", "yes"):
             break
     alerts = dict(config.get("alerts") or {})

@@ -16,6 +16,7 @@
 import argparse
 import fcntl
 import json
+import hashlib
 import math
 import os
 import re
@@ -213,6 +214,9 @@ class Notifier(object):
         # Names are explicitly allowed in notifications; no paths or log text.
         self.notification_names = [str(lc["name"]) for lc in (cfg.get("logs") or [])
                                    if lc.get("name")]
+        self.notification_names.extend(
+            str(lc["completion_notification"]["name"]) for lc in (cfg.get("logs") or [])
+            if (lc.get("completion_notification") or {}).get("name"))
         token_file = expand(gh.get("token_file") or "github.token")
         if not os.path.isabs(token_file):
             token_file = os.path.join(base, token_file)
@@ -313,6 +317,8 @@ class Notifier(object):
         text = title + "\n" + body
         if "暂停或移除" in text or "自动移出" in text:
             status = "已移出监控"
+        elif "正常完成" in text:
+            status = "正常完成"
         elif "已恢复" in text:
             status = "已恢复"
         elif "测试" in title:
@@ -336,8 +342,8 @@ class Notifier(object):
             if rules:
                 lines.append("类型：" + "、".join(rules))
         # Preserve opaque ETA idempotency markers, never raw run identifiers.
-        markers = re.findall(r"<!-- watcher-eta:([0-9a-f]{64}) -->", body)
-        lines.extend("<!-- watcher-eta:" + marker + " -->" for marker in markers)
+        markers = re.findall(r"<!-- watcher-(eta|completion):([0-9a-f]{64}) -->", body)
+        lines.extend("<!-- watcher-" + kind + ":" + marker + " -->" for kind, marker in markers)
         return "监控提醒：" + status, "\n\n".join(lines)
 
     def create_issue(self, title, body):
@@ -393,6 +399,71 @@ def render_alert(items, tails, heading):
         out.append("- **%s** · %s" %
                    (item["log"], RULE_LABELS.get(item["rule"], "告警")))
     return "\n".join(out)
+
+
+def check_completion(lc, state, notifier, dry_run=False, persist=None, logger=log):
+    """Send one completion event per explicit successful run, never infer from silence."""
+    cfg = lc.get("completion_notification") or {}
+    if not lc.get("enabled") or not cfg.get("enabled"):
+        return None
+    try:
+        name = cfg.get("name") or lc["name"]
+        run_key = cfg["run_key"]
+        success_files = cfg["success_files"]
+        failure_files = cfg.get("failure_files", [])
+        if (not isinstance(name, str) or not name.strip()
+                or not isinstance(run_key, str) or not run_key.strip()
+                or not isinstance(success_files, list) or not success_files
+                or not isinstance(failure_files, list)
+                or any(not isinstance(path, str) or not path.strip()
+                       for path in success_files + failure_files)):
+            raise ValueError("completion notification requires a name, run_key and success files")
+        identity = json.dumps([name, run_key], ensure_ascii=False).encode("utf-8")
+        key = hashlib.sha256(identity).hexdigest()
+        records = state.setdefault("completion_notifications", {})
+        fresh = key not in records
+        rec = records.setdefault(key, {"name": name, "run_key": run_key, "notified": False})
+        if rec.get("notified") or (rec.get("ignored_existing") and not cfg.get("notify_existing", False)):
+            return rec
+        if any(os.path.isfile(expand(path)) for path in failure_files):
+            rec["status"] = "failed"
+            return rec
+        # success_files are explicit success-only markers; completion_files may
+        # also contain failed terminal markers and must not be reused implicitly.
+        exists = [os.path.isfile(expand(path)) for path in success_files]
+        complete = all(exists) if cfg.get("require_all", True) else any(exists)
+        if not complete:
+            rec["status"] = "watching"
+            return rec
+        if fresh and not cfg.get("notify_existing", False):
+            rec.update(status="already_complete", ignored_existing=True)
+            return rec
+        if dry_run:
+            rec["status"] = "would_notify"
+            return rec
+        tag = "<!-- watcher-completion:" + key + " -->"
+        number = 0
+        if getattr(notifier, "github_configured", False):
+            issues = notifier._api("GET", "/repos/%s/issues?state=all&per_page=100" % notifier.repo)
+            number = next((int(issue["number"]) for issue in issues
+                           if tag in (issue.get("body") or "")), 0)
+        if not number:
+            number = notifier.create_issue("任务正常完成：" + name,
+                                           "任务：" + name + "\n\n状态：正常完成\n\n" + tag)
+        if number:
+            rec.pop("ignored_existing", None)
+            rec.update(notified=True, notified_at=time.time(), issue_number=number, status="notified")
+            if persist:
+                persist()
+            logger("Completion notification delivered once: issue=%s" % number)
+        else:
+            rec["status"] = "notification_not_delivered_retry"
+        return rec
+    except (OSError, ValueError, TypeError, KeyError) as exc:
+        logger("Completion notification unavailable: " + type(exc).__name__)
+    except Exception as exc:
+        logger("Completion notification will retry: " + type(exc).__name__)
+    return None
 
 
 def main():
@@ -659,6 +730,8 @@ def main():
             state["heartbeat_last"] = today
 
     for lc in (cfg.get("logs") or []):
+        check_completion(lc, state, notifier, dry_run=args.dry_run,
+                         persist=lambda: save_json(state_path, state), logger=log)
         if lc.get("enabled") and (lc.get("eta_reminder") or {}).get("enabled"):
             from eta import check_eta
             check_eta(lc, state, notifier, dry_run=args.dry_run,

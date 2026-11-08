@@ -8,7 +8,7 @@
 - `eta.py`：可选的通用任务剩余时间提醒，支持自定义阈值和计量单位。
 - `config.example.json`：全部使用占位符，监控和 ETA 默认关闭。
 - `install.py`：交互式安装配置和当前用户 cron，隐藏输入 token。
-- `test_eta.py`、`test_policy.py`、`test_install.py`、`test_warnings.py`：隔离回归检查，不访问真实 GitHub、不改真实 cron、不发邮件。
+- `test_eta.py`、`test_policy.py`、`test_install.py`、`test_warnings.py`、`test_completion.py`：隔离回归检查，不访问真实 GitHub、不改真实 cron、不发邮件。
 
 主程序顶部旧注释的“每小时”仅为示例，执行频率由 cron 决定；下面使用每 5 分钟。
 
@@ -33,8 +33,9 @@ python3 install.py
 1. 独立运行目录，默认 `~/.local/train_watch`，必须位于 Git 仓库之外。
 2. 私有告警仓库、接收提醒的 GitHub 用户名及 token。token 隐藏输入，不出现在命令行或配置摘要中；支持 HTTP(S) 代理。代理留空时沿用已有配置或当前环境代理，并保存在本地配置中供 cron 使用；输入 `-` 则不使用代理。
 3. 任务名称、当前用户可读且已存在的日志文件路径，可一次添加多个目标。
-4. 停滞告警阈值（默认 60 分钟）、持续告警后移出监控的阈值（默认 48 小时）及巡检间隔（默认每 5 分钟）。两种阈值均可设为 0 关闭。
-5. 查看不含 token 的摘要，输入 `y` 完成安装。取消时不写配置或 cron。
+4. 停滞告警阈值（默认 60 分钟），以及可选的正常完成标记、失败标记路径。标记文件可以尚未生成；只填写成功专用标记，不要把任意终态文件当成成功。
+5. 持续告警后移出监控的阈值（默认 48 小时）及巡检间隔（默认每 5 分钟）。两种阈值均可设为 0 关闭。
+6. 查看不含 token 的摘要，输入 `y` 完成安装。取消时不写配置或 cron。
 
 安装器只读验证仓库为 Private、Issues 已开启、令牌能读取 Issues、用户可被指派；不自动建仓或创建 token。只读验证无法证明 Issues 写权限，也不保证邮件入箱，仍需正确授予权限并启用 GitHub 邮件通知。
 
@@ -103,6 +104,28 @@ python3 train_watch.py
 
 `state.json` 保存偏移、事件和 ETA 去重信息；不要随意删除。改用新运行目录会失去既有去重状态。巡检异常会打印 traceback，顶层捕获后进程仍可能返回 0，因此不能只靠退出码判断健康，需检查 `watch.log` 和状态更新时间。
 
+## 正常完成提醒
+
+可在安装时填写成功标记路径，或在日志目标中启用 `completion_notification`。实验在全部步骤正常结束后，应原子生成一个**仅代表成功**的文件。监控器不会把日志停更、文件消失、进程不见或任意退出当作成功。
+
+```json
+"completion_notification": {
+  "enabled": true,
+  "name": "my-experiment",
+  "run_key": "run-2026-01",
+  "success_files": ["/path/to/SUCCEEDED.json"],
+  "failure_files": ["/path/to/FAILED.json"],
+  "require_all": true,
+  "notify_existing": false
+}
+```
+
+`name` 可选，默认日志目标的名称；`run_key` 必填，每次新实验更换。成功标记的文件内容不解析，因此必须选用可信的成功专用文件。默认要求所有 `success_files` 都存在，`require_all: false` 则任意一个存在即可；任何 `failure_files` 存在时不发完成提醒。`completion_files` 可能同时包含成功和失败终态文件，只用于抑制停滞，不能直接等同于成功。
+
+首次巡检就已成功的历史实验默认静默；`notify_existing: true` 可显式补发，包括先前被记为历史完成而未通知的实验。已通知的运行不会反复提醒，新实验需更换运行标识。正常情况下，先建立 `watching` 状态，再在标记出现后的下一次巡检创建一条完成 Issue，由 GitHub 邮件通知；正文只含任务名称和“正常完成”。不额外创建关闭/评论消息。多个日志目标使用相同 `name` 和 `run_key` 可共用一条实验完成提醒，应采用一致的成功/失败标记配置。
+
+去重信息保存在 `state.json` 的 `completion_notifications` 中。投递失败会重试，并用不包含运行明文信息的散列标记检查最近 100 个 Issue，以恢复可能已成功的投递；这不是无限历史或严格 exactly-once 保证。不要删除状态文件。只配置这项功能不会生成成功标记、修改实验代码或停止监控。
+
 ## 可选 ETA 提醒
 
 普通日志监控不需要 ETA；保持 `eta_reminder.enabled` 为 `false` 即可，此时也不需要部署 `eta.py`。需要提前完成提醒时，将 `eta.py` 放在主程序同目录，再开启配置。此模块适用于批处理、文件转换、数据下载、训练步骤等可报告已处理量和总量的任务。
@@ -155,6 +178,7 @@ python3 test_eta.py
 python3 -m unittest test_policy
 python3 -m unittest test_install
 python3 -m unittest test_warnings
+python3 -m unittest test_completion
 ```
 
 测试使用临时目录与 Fake Notifier，覆盖 ETA 门槛、过期数据、计数校验、失败重试、去重及真实主入口的暂停目标清理和 dry-run 状态保护。
