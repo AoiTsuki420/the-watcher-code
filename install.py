@@ -79,7 +79,7 @@ def validate_runtime(path):
         if any(path.iterdir()) and not (path / "config.json").is_file():
             raise ValueError("该目录非空且不是已有 Watcher 运行目录")
     for name in ("config.json", "github.token", "state.json", ".lock", ".install.lock",
-                 "train_watch.py", "eta.py", "watch.log"):
+                 "train_watch.py", "watch.log"):
         if (path / name).is_symlink():
             raise ValueError("运行目录中的受管文件不能是符号链接")
     return path
@@ -198,12 +198,10 @@ def apply_install(runtime, config, token, original_cron, new_cron, original_conf
             raise RuntimeError("crontab 在填写过程中已改变，请重新运行安装器")
         content = {
             "train_watch.py": (source / "train_watch.py").read_bytes(),
-            "eta.py": (source / "eta.py").read_bytes(),
             "config.json": json.dumps(config, ensure_ascii=False, indent=2).encode("utf-8"),
             "github.token": (token + "\n").encode("utf-8"),
         }
-        for name in ("train_watch.py", "eta.py"):
-            compile(content[name], name, "exec")
+        compile(content["train_watch.py"], "train_watch.py", "exec")
         saved = {name: current(name) for name in content}
         try:
             for name, data in content.items():
@@ -294,8 +292,7 @@ def main():
             terminal_files = [success] + failures
         logs.append(dict(name=name, path=str(path), enabled=True, start_at="end",
                          stall_minutes=stall, resolve_after_lines=200, notify_on_start=False,
-                         completion_files=terminal_files, completion_notification=completion,
-                         eta_reminder={"enabled": False}))
+                         completion_files=terminal_files, completion_notification=completion))
         if ask("继续添加其他日志？y/N", "N").lower() not in ("y", "yes"):
             break
     alerts = dict(config.get("alerts") or {})
@@ -319,7 +316,7 @@ def main():
     apply_install(runtime, config, token, original_cron, new_cron, original_config, original_token)
     print("安装完成。配置和 token 权限为 600，运行目录为 700。")
     print("cron 将执行运行目录中的独立源码副本；请确认系统 cron/crond 服务正在运行。")
-    print("首次巡检从日志末尾开始；ETA 默认关闭。未发送测试通知。")
+    print("首次巡检从日志末尾开始。未发送测试通知。")
     print("可手动验证邮件（会创建并关闭测试 Issue）：")
     print(" ", " ".join(shlex.quote(arg) for arg in ["env", "TRAIN_WATCH_DIR=" + str(runtime),
           sys.executable, str(runtime / "train_watch.py"), "--test-notify"]))

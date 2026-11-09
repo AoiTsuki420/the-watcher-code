@@ -118,8 +118,7 @@ class InstallTests(unittest.TestCase):
         self.new_cron = setup.merge_cron(self.cron, self.runtime, 5, Path("/usr/bin/python3"))
         self.source = self.folder / "source"
         self.source.mkdir()
-        for name in ("train_watch.py", "eta.py"):
-            (self.source / name).write_text("# Test source only\n")
+        (self.source / "train_watch.py").write_text("# Test source only\n")
 
     def apply(self):
         setup.apply_install(self.runtime, self.config, "new-dummy-value", self.cron,
@@ -133,7 +132,7 @@ class InstallTests(unittest.TestCase):
         self.assertEqual(cron[0], self.new_cron)
         self.assertEqual((self.runtime / "state.json").read_bytes(), self.state)
         self.assertEqual(stat.S_IMODE(self.runtime.stat().st_mode), 0o700)
-        for name in ("config.json", "github.token", "train_watch.py", "eta.py"):
+        for name in ("config.json", "github.token", "train_watch.py"):
             self.assertEqual(stat.S_IMODE((self.runtime / name).stat().st_mode), 0o600)
         self.assertNotIn("new-dummy-value", (self.runtime / "config.json").read_text())
         self.assertNotIn("new-dummy-value", cron[0])

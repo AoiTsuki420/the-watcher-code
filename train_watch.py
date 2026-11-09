@@ -3,9 +3,11 @@
 """train_watch.py — 训练日志巡检 + GitHub Issue 告警（仅标准库，适配 cron）
 
 用法:
-    python3 train_watch.py                # 巡检一次（cron 每小时调用）
+    python3 train_watch.py                # 巡检一次
     python3 train_watch.py --dry-run      # 预览动作：不写状态、不发通知
     python3 train_watch.py --test-notify  # 立即发一条测试通知（验证链路）
+    python3 train_watch.py add NAME LOG_PATH
+    python3 train_watch.py remove NAME
     TRAIN_WATCH_DIR=/path python3 train_watch.py   # 覆盖工作目录（测试用）
 
 约定:
@@ -81,6 +83,10 @@ def base_dir():
 
 def expand(path):
     return os.path.expanduser(os.path.expandvars(path or ""))
+
+
+def target_name(target):
+    return target.get("name") or os.path.basename(target.get("path") or "log")
 
 
 def load_json(path, default=None):
@@ -323,8 +329,6 @@ class Notifier(object):
             status = "已恢复"
         elif "测试" in title:
             status = "通知测试"
-        elif "预计剩余" in text or "预计接近结束" in text:
-            status = "预计接近完成"
         elif "已开始" in text:
             status = "已开始"
         elif "巡检正常" in text:
@@ -341,9 +345,7 @@ class Notifier(object):
             rules = [label for label in RULE_LABELS.values() if label in text]
             if rules:
                 lines.append("类型：" + "、".join(rules))
-        # Preserve opaque ETA idempotency markers, never raw run identifiers.
-        markers = re.findall(r"<!-- watcher-(eta|completion):([0-9a-f]{64}) -->", body)
-        lines.extend("<!-- watcher-" + kind + ":" + marker + " -->" for kind, marker in markers)
+        lines.extend(re.findall(r"<!-- watcher-completion:[0-9a-f]{64} -->", body))
         return "监控提醒：" + status, "\n\n".join(lines)
 
     def create_issue(self, title, body):
@@ -466,11 +468,65 @@ def check_completion(lc, state, notifier, dry_run=False, persist=None, logger=lo
     return None
 
 
+def update_target(args):
+    base = base_dir()
+    config_path = os.path.join(base, "config.json")
+    if not os.path.isfile(config_path):
+        raise ValueError("找不到监控配置：%s" % config_path)
+
+    with open(os.path.join(base, ".lock"), "a") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        with open(config_path, encoding="utf-8") as config_file:
+            config = json.load(config_file)
+        if not isinstance(config, dict):
+            raise ValueError("监控配置必须是 JSON 对象")
+        targets = config.get("logs")
+        if targets is None:
+            targets = []
+        if not isinstance(targets, list) or any(not isinstance(item, dict) for item in targets):
+            raise ValueError("logs 必须是监控目标列表")
+        matches = [index for index, target in enumerate(targets) if target_name(target) == args.name]
+        if args.command == "add":
+            if not args.name.strip() or ":" in args.name or matches:
+                raise ValueError("请使用唯一的非空名称，名称不能包含冒号")
+            path = os.path.abspath(expand(args.path))
+            if not os.path.isfile(path) or not os.access(path, os.R_OK):
+                raise ValueError("日志文件必须存在且可读")
+            targets.append({"name": args.name, "path": path, "enabled": True,
+                            "start_at": "end", "stall_minutes": 60})
+        else:
+            if len(matches) != 1:
+                raise ValueError("请指定一个已配置且唯一的任务名称")
+            targets.pop(matches[0])
+        config["logs"] = targets
+        previous_umask = os.umask(0o077)
+        try:
+            save_json(config_path, config)
+        finally:
+            os.umask(previous_umask)
+    print("配置已更新：%s %s" % (args.command, args.name))
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--dry-run", action="store_true", help="只预览，不写状态/不发通知")
     ap.add_argument("--test-notify", action="store_true", help="发一条测试通知")
+    commands = ap.add_subparsers(dest="command")
+    add = commands.add_parser("add", help="添加日志监控")
+    add.add_argument("name", help="唯一任务名称")
+    add.add_argument("path", help="日志文件路径")
+    remove = commands.add_parser("remove", help="按任务名称移除日志监控")
+    remove.add_argument("name", help="任务名称")
     args = ap.parse_args()
+
+    if args.command:
+        if args.dry_run or args.test_notify:
+            ap.error("add 和 remove 不能与巡检选项一起使用")
+        try:
+            update_target(args)
+        except (OSError, ValueError) as exc:
+            ap.error(str(exc))
+        return
 
     base = base_dir()
     os.makedirs(base, exist_ok=True)
@@ -514,7 +570,7 @@ def main():
     for lc in cfg.get("logs") or []:
         if not lc.get("enabled"):
             continue
-        name = lc.get("name") or os.path.basename(lc.get("path") or "log")
+        name = target_name(lc)
         path = expand(lc.get("path") or "")
         stall_sec = float(lc.get("stall_minutes", 90)) * 60
         resolve_after = int(lc.get("resolve_after_lines", 200))
@@ -632,7 +688,7 @@ def main():
     if auto_removed and not args.dry_run:
         save_json(os.path.join(base, "config.json"), cfg)
 
-    configured_names = {lc.get("name") or os.path.basename(lc.get("path") or "log")
+    configured_names = {target_name(lc)
                         for lc in (cfg.get("logs") or []) if lc.get("enabled", True)}
     purged = [k for k in active if k.split(":", 1)[0] not in configured_names]
     for k in purged:
@@ -732,10 +788,6 @@ def main():
     for lc in (cfg.get("logs") or []):
         check_completion(lc, state, notifier, dry_run=args.dry_run,
                          persist=lambda: save_json(state_path, state), logger=log)
-        if lc.get("enabled") and (lc.get("eta_reminder") or {}).get("enabled"):
-            from eta import check_eta
-            check_eta(lc, state, notifier, dry_run=args.dry_run,
-                      persist=lambda: save_json(state_path, state), logger=log)
 
     if not args.dry_run:
         save_json(state_path, state)

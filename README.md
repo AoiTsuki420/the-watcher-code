@@ -5,12 +5,9 @@
 ## 文件与来源
 
 - `train_watch.py`：增量日志巡检、告警状态管理和 GitHub/可选 SMTP 通知。
-- `eta.py`：可选的通用任务剩余时间提醒，支持自定义阈值和计量单位。
-- `config.example.json`：全部使用占位符，监控和 ETA 默认关闭。
+- `config.example.json`：全部使用占位符，监控默认关闭。
 - `install.py`：交互式安装配置和当前用户 cron，隐藏输入 token。
-- `test_eta.py`、`test_policy.py`、`test_install.py`、`test_warnings.py`、`test_completion.py`：隔离回归检查，不访问真实 GitHub、不改真实 cron、不发邮件。
-
-主程序顶部旧注释的“每小时”仅为示例，执行频率由 cron 决定；下面使用每 5 分钟。
+- `test_policy.py`、`test_install.py`、`test_warnings.py`、`test_completion.py`：隔离回归检查，不访问真实 GitHub、不改真实 cron、不发邮件。
 
 ## GitHub 仓库与通知设置
 
@@ -39,9 +36,9 @@ python3 install.py
 
 安装器只读验证仓库为 Private、Issues 已开启、令牌能读取 Issues、用户可被指派；不自动建仓或创建 token。只读验证无法证明 Issues 写权限，也不保证邮件入箱，仍需正确授予权限并启用 GitHub 邮件通知。
 
-确认后，脚本把两个运行模块复制到运行目录，生成 `config.json` 和独立的 `github.token`，目录权限为 `700`、受管文件为 `600`，并安装带标记的用户 cron。真实配置和 token 不写进 Git 仓库。普通监控从首次巡检时的日志末尾开始，ETA 默认关闭。
+确认后，脚本把 `train_watch.py` 复制到运行目录，生成 `config.json` 和独立的 `github.token`，目录权限为 `700`、受管文件为 `600`，并安装带标记的用户 cron。真实配置和 token 不写进 Git 仓库。普通监控从首次巡检时的日志末尾开始。
 
-重复运行安装器可保留已有目标和读取状态、添加新名称的目标、复用已有 token，并更新受管 cron，不会重复追加。修改已有目标请直接编辑运行目录的 `config.json`。如果发现已有手工配置的 Watcher cron，安装器会停止：先用 `crontab -l` 检查，在 `crontab -e` 中只移除你确认由本次安装接管的那条 Watcher 任务，再重跑安装器；其他 cron 任务保留。
+重复运行安装器可保留已有目标和读取状态、添加新名称的目标、复用已有 token，并更新受管 cron，不会重复追加。日常添加或移除目标可用下方的命令。如果发现已有手工配置的 Watcher cron，安装器会停止：先用 `crontab -l` 检查，在 `crontab -e` 中只移除你确认由本次安装接管的那条 Watcher 任务，再重跑安装器；其他 cron 任务保留。
 
 文件写入或 cron 更新失败时会尝试恢复原配置、源码、token 和 cron；若检测到并发修改则停止，避免覆盖。安装器不会重置 `state.json`、删除日志或自动发送测试邮件。安装完成后会显示显式使用运行目录的测试命令；需要验证邮件时手动执行该命令，它会创建并关闭测试 Issue。
 
@@ -52,11 +49,11 @@ crontab -l
 tail -n 30 ~/.local/train_watch/watch.log
 ```
 
-如果选择了自定义运行目录，请替换上面的日志路径。克隆目录后续 `git pull` 不会自动更新已安装副本；需要更新时，可将新版 `train_watch.py`、`eta.py` 复制到运行目录，保留本地配置、token 和状态。
+如果选择了自定义运行目录，请替换上面的日志路径。克隆目录后续 `git pull` 不会自动更新已安装副本；需要更新时，可将新版 `train_watch.py` 复制到运行目录，保留本地配置、token 和状态。
 
 ## 手动配置与运行
 
-将两个模块放在同一目录。源码目录与运行配置目录可以分开：
+源码目录与运行配置目录可以分开。
 
 ```sh
 git clone https://github.com/AoiTsuki420/the-watcher-code.git
@@ -90,73 +87,16 @@ python3 train_watch.py
 
 ## 添加或移除监控日志
 
-在服务器上进入含有 `train_watch.py` 的目录。默认操作 `~/.local/train_watch/config.json`。如果安装时用了自定义运行目录，先执行 `export TRAIN_WATCH_DIR=/absolute/runtime/path`，把路径换成 cron 使用的目录。
-
-将下面的函数复制到当前 shell。它使用巡检脚本的文件锁更新配置。
+在服务器上进入含有 `train_watch.py` 的目录。默认读取 `~/.local/train_watch/config.json`。如果使用自定义运行目录，请先将 `TRAIN_WATCH_DIR` 设为 cron 使用的目录。
 
 ```sh
-watch_log() {
-  python3 -B - "$@" <<'PY'
-import argparse
-import fcntl
-import json
-import os
-from pathlib import Path
-
-from train_watch import base_dir, expand, save_json
-
-parser = argparse.ArgumentParser()
-parser.add_argument("action", choices=("add", "remove"))
-parser.add_argument("name")
-parser.add_argument("path", nargs="?")
-args = parser.parse_args()
-
-runtime = Path(base_dir())
-config_path = runtime / "config.json"
-if not config_path.is_file():
-    parser.exit(1, "找不到监控配置：%s\n" % config_path)
-
-os.umask(0o077)
-with (runtime / ".lock").open("a") as lock:
-    fcntl.flock(lock, fcntl.LOCK_EX)
-    config = json.loads(config_path.read_text(encoding="utf-8"))
-    targets = config.get("logs") or []
-    matches = [i for i, target in enumerate(targets)
-               if (target.get("name") or os.path.basename(target.get("path") or "log")) == args.name]
-    if args.action == "add":
-        if not args.name.strip() or ":" in args.name or matches:
-            parser.error("请使用唯一的非空名称，名称不能包含冒号")
-        if not args.path:
-            parser.error("add 需要日志文件路径")
-        path = Path(os.path.abspath(expand(args.path)))
-        if not path.is_file() or not os.access(path, os.R_OK):
-            parser.error("日志文件必须存在且可读")
-        targets.append({"name": args.name, "path": str(path), "enabled": True,
-                        "start_at": "end", "stall_minutes": 60})
-    else:
-        if args.path or len(matches) != 1:
-            parser.error("remove 只接受一个已配置且唯一的任务名称")
-        targets.pop(matches[0])
-    config["logs"] = targets
-    save_json(str(config_path), config)
-    print("配置已更新：%s %s" % (args.action, args.name))
-PY
-}
+python3 train_watch.py add my-experiment /absolute/path/to/train.log
+python3 train_watch.py remove my-experiment
 ```
 
-添加日志时填写任务名称和日志路径。新目标从首次巡检时的文件末尾开始读取，默认 60 分钟无更新后告警。
+添加时指定唯一任务名称和可读的日志文件。新目标从首次巡检时的文件末尾开始读取，默认 60 分钟无更新后告警。移除时按任务名称匹配，原始日志文件会保留。
 
-```sh
-watch_log add my-experiment /absolute/path/to/train.log
-```
-
-移除时填写配置中的任务名称。原始日志文件会保留。
-
-```sh
-watch_log remove my-experiment
-```
-
-变更在下次巡检时生效。可以运行 `python3 train_watch.py --dry-run` 预览。新实验请使用新名称，避免沿用同名目标的读取位置。
+命令使用巡检的文件锁更新配置，变更在下次巡检时生效。用 `python3 train_watch.py --dry-run` 可预览巡检结果。新的实验请使用新的任务名称，避免沿用旧读取位置。
 
 ## 检测与恢复
 
@@ -172,7 +112,7 @@ watch_log remove my-experiment
 
 停滞告警连续超过 `alerts.auto_remove_stalled_hours` 小时后，自动将该目标的 `enabled` 设为 `false`，移出监控。配置示例为 48 小时，可在单个日志目标上用同名字段覆盖；设为 0 关闭自动移出；未配置此规则时也不自动移出。计时从首次停滞告警开始，恢复更新后重置。完成标记和日志缺失不会触发自动移出；不会删除原始日志。配置中的 `auto_removed` 记录原因和时间。重新启用时将 `enabled` 改回 `true`；如需只读新日志，设置 `start_at: "end"`，并可删除旧 `auto_removed` 记录。
 
-`state.json` 保存偏移、事件和 ETA 去重信息；不要随意删除。改用新运行目录会失去既有去重状态。巡检异常会打印 traceback，顶层捕获后进程仍可能返回 0，因此不能只靠退出码判断健康，需检查 `watch.log` 和状态更新时间。
+`state.json` 保存偏移、事件和完成通知的去重信息；不要随意删除。改用新运行目录会失去既有去重状态。巡检异常会打印 traceback，顶层捕获后进程仍可能返回 0，因此不能只靠退出码判断健康，需检查 `watch.log` 和状态更新时间。
 
 ## 正常完成提醒
 
@@ -196,59 +136,22 @@ watch_log remove my-experiment
 
 去重信息保存在 `state.json` 的 `completion_notifications` 中。投递失败会重试，并用不包含运行明文信息的散列标记检查最近 100 个 Issue，以恢复可能已成功的投递；这不是无限历史或严格 exactly-once 保证。不要删除状态文件。只配置这项功能不会生成成功标记、修改实验代码或停止监控。
 
-## 可选 ETA 提醒
-
-普通日志监控不需要 ETA；保持 `eta_reminder.enabled` 为 `false` 即可，此时也不需要部署 `eta.py`。需要提前完成提醒时，将 `eta.py` 放在主程序同目录，再开启配置。此模块适用于批处理、文件转换、数据下载、训练步骤等可报告已处理量和总量的任务。
-
-任务需自行原子更新一个进度 JSON 文件，监控程序不会从任意日志中自动推断进度：
-
-```json
-{"time":1700000000,"completed":80000,"total":100000}
-```
-
-`time` 为实际采样时刻的 Unix 秒时间戳；示例时间须换成当前时间。`completed`、`total` 为非负整数，且 `completed <= total`；可以表示文件数、样本数、步骤数等同一种单位。任务生产端自行决定失败或跳过是否算作已处理，完成数量不等于成功数量。
-
-在对应日志目标的 `eta_reminder` 中配置：
-
-| 字段 | 含义与默认值 |
-|---|---|
-| `enabled` | 是否启用，默认关闭 |
-| `run_key` | 必填，本轮唯一标识；同一轮保持稳定，新一轮更换 |
-| `progress_path` | 必填，进度 JSON 的路径 |
-| `threshold_seconds` | 剩余多久以内提醒，默认 3600 秒 |
-| `window_seconds` | 估速使用的近期窗口，默认 3600 秒 |
-| `min_window_seconds` | 最短有效观测跨度，默认 900 秒，不能大于窗口 |
-| `progress_timeout_seconds` | 进度允许的最大年龄，默认 300 秒 |
-| `unit` | 进度计量单位，默认“项”；最终通知摘要省略进度详情 |
-| `active_path` | 可选心跳 JSON 路径，留空不检查心跳；格式为 `{"time":1700000000}` |
-| `heartbeat_timeout_seconds` | 启用心跳检查时允许的最大年龄，默认 90 秒 |
-| `failure_path` | 可选失败标记文件路径，存在时不发 ETA 提醒 |
-
-路径支持 `~` 和环境变量；建议填写绝对路径。日志目标的 `completion_files` 同样可抑制 ETA 提醒。采样间隔应明显短于最短观测跨度，并与进度超时匹配。例如每 5 分钟巡检、每分钟刷新进度，可以使用默认参数。
-
-估算采用近期窗口内 `completed` 的增量速度。在至少覆盖最短观测跨度、有正增量且预计剩余进入阈值时，每个目标的每个 `run_key` 提醒一次。总量变化、计数回退或时间回退会重置样本；完成、失败、过期或无效数据不会触发提醒。内部预计结束时间使用 UTC；最终通知只显示任务名称和“预计接近完成”状态，不执行后续任务。
-
-发送失败会在下次巡检重试。恢复通知结果时只查最近 100 个 Issue，去重并非无限历史或严格 exactly-once 保证。仅写本地 outbox 时不算 GitHub 投递成功，满足提醒条件的后续巡检可能继续写入 outbox。
-
-本版本使用通用的 `completed`/`total` 协议，不再读取旧专用扩展的 `valid`/`skipped`/`pending` 格式；迁移时需调整进度生产端或增加转换步骤。
-
 ## 隐私与凭据
 
 接收真实监控信息的告警仓库应保持 Private；脱敏的源码仓库可以公开。私有仓库中的 Issue 仍对有权限的协作者、组织管理员或安装的相关应用可见；单条 Issue 不能额外设成“仅本人”。如需要只有自己能看，使用个人私有且无其他协作者的告警仓库，并检查应用访问权限。
 
-新建 Issue、后续评论及 SMTP 邮件只包含配置中明确填写的任务 `name`、告警类型与状态，不发送日志内容、异常堆栈、路径、服务器地址、处理计数或进度详情。请将 `name` 填为适合通知展示的任务名称，不要在名称里写秘密。ETA 使用不含原始运行标识的散列标记去重。详细信息仅留在服务器本地状态和日志中。历史 Issue 和已发送邮件不会被自动改写或撤回。
+新建 Issue、后续评论及 SMTP 邮件只包含配置中明确填写的任务 `name`、告警类型与状态，不发送日志内容、异常堆栈、路径、服务器地址、处理计数或进度详情。请将 `name` 填为适合通知展示的任务名称，不要在名称里写秘密。详细信息仅留在服务器本地状态和日志中。历史 Issue 和已发送邮件不会被自动改写或撤回。
 
 `.gitignore` 排除了真实 `config.json`、token/password 文件、状态、日志、锁和缓存。只提交源码、示例、文档及隔离测试；上传前仍应检查暂存差异，忽略规则不会移除历史提交中的秘密。
 
 ## 离线验证
 
 ```sh
-python3 -m py_compile train_watch.py eta.py test_eta.py
-python3 test_eta.py
+python3 -m py_compile train_watch.py install.py
 python3 -m unittest test_policy
 python3 -m unittest test_install
 python3 -m unittest test_warnings
 python3 -m unittest test_completion
 ```
 
-测试使用临时目录与 Fake Notifier，覆盖 ETA 门槛、过期数据、计数校验、失败重试、去重及真实主入口的暂停目标清理和 dry-run 状态保护。
+测试使用临时目录和模拟通知器，覆盖日志目标管理、告警过滤、停滞清理、完成通知去重、安装和 dry-run 状态保护。

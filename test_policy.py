@@ -57,8 +57,8 @@ class PolicyTests(unittest.TestCase):
                 notifier.create_issue("训练告警：崩溃/报错", "batch-job " + secret)
                 notifier.comment(42, "已恢复 batch-job " + secret)
                 notifier.comment(42, "自动移出监控 batch-job " + secret)
-                marker = "<!-- watcher-eta:" + "a" * 64 + " -->"
-                notifier.create_issue("预计剩余提醒 batch-job", secret + marker)
+                marker = "<!-- watcher-completion:" + "a" * 64 + " -->"
+                notifier.create_issue("正常完成 batch-job", secret + marker)
             self.assertEqual(len(emails), 4)
             for item in requests + emails:
                 text = json.dumps(item, ensure_ascii=False)
@@ -72,14 +72,14 @@ class PolicyTests(unittest.TestCase):
 
 
 class MainTests(unittest.TestCase):
-    def exercise(self, *, dry_run=False, fresh=False, completed=False, missing=False):
+    def exercise(self, *, dry_run=False, fresh=False, completed=False, missing=False, enabled=True):
         with tempfile.TemporaryDirectory() as folder:
             p = Path(folder)
             logfile = p / "job.log"
             logfile.write_text("healthy\n")
             now = 1000000.0
             os.utime(str(logfile), (now if fresh else now - 7200,) * 2)
-            target = dict(name="job", enabled=True, path=str(logfile), stall_minutes=60)
+            target = dict(name="job", enabled=enabled, path=str(logfile), stall_minutes=60)
             if completed:
                 marker = p / "DONE"
                 marker.touch()
@@ -150,6 +150,39 @@ class MainTests(unittest.TestCase):
 
     def test_missing_file_does_not_use_old_stall_for_retirement(self):
         self.exercise(missing=True)
+
+    def test_disabled_target_closes_existing_stall_incident(self):
+        self.exercise(enabled=False)
+
+    def test_add_and_remove_log_without_polling(self):
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder)
+            config = path / "config.json"
+            original = {"logs": [{"path": "/old/retained.log"}], "alerts": {"reminder_hours": 24}}
+            config.write_text(json.dumps(original), encoding="utf-8")
+            logfile = path / "new train.log"
+            logfile.write_text("training\n", encoding="utf-8")
+
+            def run(*args):
+                with patch.dict(os.environ, TRAIN_WATCH_DIR=folder), \
+                        patch.object(sys, "argv", ["watch", *args]), \
+                        patch.object(watch, "Notifier", side_effect=AssertionError("unexpected poll")):
+                    watch.main()
+
+            run("add", "new-job", str(logfile))
+            added = json.loads(config.read_text(encoding="utf-8"))
+            self.assertEqual(added["logs"], original["logs"] + [
+                {"name": "new-job", "path": str(logfile), "enabled": True,
+                 "start_at": "end", "stall_minutes": 60}])
+            for args in (("add", "retained.log", str(logfile)), ("remove", "unknown")):
+                with self.subTest(args=args), self.assertRaises(SystemExit) as error:
+                    run(*args)
+                self.assertEqual(error.exception.code, 2)
+                self.assertEqual(json.loads(config.read_text(encoding="utf-8")), added)
+            run("remove", "new-job")
+            self.assertEqual(json.loads(config.read_text(encoding="utf-8")), original)
+            self.assertEqual(logfile.read_text(encoding="utf-8"), "training\n")
+            self.assertFalse((path / "state.json").exists())
 
 
 if __name__ == "__main__":
