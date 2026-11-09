@@ -234,6 +234,7 @@ def main():
         raise RuntimeError("请在交互终端运行，token 必须通过隐藏输入填写")
     if not shutil.which("crontab"):
         raise RuntimeError("未找到 crontab；请先安装并启用 cron/crond，再运行安装器")
+    print("方括号里是默认值，直接按回车就选它。")
     runtime = validate_runtime(absolute_path(ask("运行目录（须在 Git 仓库之外）",
                                                 str(Path.home() / ".local/train_watch"))))
     original_config = (runtime / "config.json").read_bytes() if (runtime / "config.json").exists() else None
@@ -247,22 +248,26 @@ def main():
     gh = dict(config.get("github") or {})
     if gh.get("token_file", "github.token") != "github.token":
         raise ValueError("已有配置使用自定义 token_file，请手动维护，避免覆盖认证设置")
-    repo = repository(ask("私有告警仓库（OWNER/REPO 或 GitHub URL）", gh.get("repo", "")))
-    assignee = ask("接收提醒的 GitHub 用户名", gh.get("assignee") or repo.split("/")[0]).lstrip("@")
+    repo = repository(ask("私有告警仓库（例如 alice/watcher-alerts，也可填 GitHub URL）", gh.get("repo", "")))
+    assignee = ask("接收提醒的 GitHub 用户名（例如 alice）",
+                   gh.get("assignee") or repo.split("/")[0]).lstrip("@")
     if not re.fullmatch(r"[A-Za-z0-9-]+", assignee):
         raise ValueError("无效 GitHub 用户名")
     # getpass fallback may echo; require an actual terminal and treat its warning as an error.
     import warnings
     with warnings.catch_warnings():
         warnings.simplefilter("error", getpass.GetPassWarning)
-        token = getpass.getpass("GitHub token（隐藏输入" + ("，留空保留已有 token" if original_token else "") + "）：").strip()
+        token_prompt = "粘贴自己的 GitHub token（输入时隐藏"
+        if original_token:
+            token_prompt += "，留空保留已有 token"
+        token = getpass.getpass(token_prompt + "）：").strip()
     if not token and original_token:
         token = next((line.strip() for line in original_token.decode().splitlines()
                       if line.strip() and not line.lstrip().startswith("#")), "")
     if not token or clean(token) != token or any(char.isspace() for char in token):
         raise ValueError("token 不能为空或包含空白字符")
     environment_proxy = urllib.request.getproxies().get("https") or urllib.request.getproxies().get("http", "")
-    proxy_input = ask("GitHub HTTP(S) 代理（留空沿用已有/环境设置，输入 - 不使用）")
+    proxy_input = ask("GitHub HTTP(S) 代理（例如 http://proxy.example.com:8080，留空沿用已有或环境设置，输入 - 关闭）")
     proxy = "" if proxy_input == "-" else (proxy_input or gh.get("proxy", environment_proxy))
     if proxy and urllib.parse.urlsplit(proxy).scheme not in ("http", "https"):
         raise ValueError("代理地址须使用 http:// 或 https://")
@@ -271,21 +276,21 @@ def main():
     print("验证通过。只读检查不能确认 Issues 写权限，请确保令牌授予 Issues: Read and write。")
     logs = list(config.get("logs") or [])
     while True:
-        name = ask("任务名称（会出现在邮件中）")
+        name = ask("任务名称（例如 exp-01，会出现在邮件中）")
         if not name:
             raise ValueError("任务名称不能为空")
         if any(item.get("name") == name for item in logs):
             raise ValueError("该任务名称已存在；已有目标将保留，请使用新名称或手动编辑配置")
-        path = absolute_path(ask("日志路径（可使用 ~）"))
+        path = absolute_path(ask("日志路径（例如 ~/runs/exp-01/train.log）"))
         if not path.is_file() or not os.access(str(path), os.R_OK):
             raise ValueError("日志文件必须存在且当前用户可读；请确认文件生成后重试")
         stall = number("多少分钟无更新后告警（0 关闭）", 60)
-        success = ask("正常完成标记文件路径（可留空；请填写只在成功结束时生成的文件）")
+        success = ask("成功时生成的标记文件（例如 ~/runs/exp-01/DONE.json，可留空）")
         completion = {"enabled": False}
         terminal_files = []
         if success:
             success = str(absolute_path(success))
-            failure = ask("失败标记文件路径（可留空；存在时不发完成通知）")
+            failure = ask("失败标记文件（例如 ~/runs/exp-01/FAILED.json，可留空）")
             failures = [str(absolute_path(failure))] if failure else []
             completion = dict(enabled=True, run_key=uuid.uuid4().hex, success_files=[success],
                               failure_files=failures, require_all=True, notify_existing=False)
@@ -293,7 +298,7 @@ def main():
         logs.append(dict(name=name, path=str(path), enabled=True, start_at="end",
                          stall_minutes=stall, resolve_after_lines=200, notify_on_start=False,
                          completion_files=terminal_files, completion_notification=completion))
-        if ask("继续添加其他日志？y/N", "N").lower() not in ("y", "yes"):
+        if ask("继续添加其他日志（输入 y 继续）", "N").lower() not in ("y", "yes"):
             break
     alerts = dict(config.get("alerts") or {})
     alerts["auto_remove_stalled_hours"] = number("停滞告警持续多少小时后移出监控（0 关闭）",
@@ -310,7 +315,7 @@ def main():
     print("任务：", "、".join(str(item.get("name", "未命名")) for item in logs))
     print("巡检：每 %d 分钟；停滞移出阈值：%s 小时" % (interval, alerts["auto_remove_stalled_hours"]))
     print("token 不显示、不写入命令行；已有监控目标与 state.json 保留。")
-    if ask("确认安装配置和当前用户 cron？y/N", "N").lower() not in ("y", "yes"):
+    if ask("确认安装并设置定时检查（输入 y 安装）", "N").lower() not in ("y", "yes"):
         print("已取消，未写入配置或 cron。")
         return
     apply_install(runtime, config, token, original_cron, new_cron, original_config, original_token)
