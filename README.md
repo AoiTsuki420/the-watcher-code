@@ -12,7 +12,25 @@ cd the-watcher-code
 python3 install.py
 ```
 
-按提示填写仓库名（`OWNER/REPO`）、接收提醒的 GitHub 用户名、token 和日志路径。最后输入 `y`。安装器默认把文件放到 `~/.local/train_watch`，并设置每 5 分钟检查一次。
+下面以 `alice` 的首次安装为例。把仓库、用户名和日志路径换成自己的。`〈回车〉` 表示直接按回车，token 输入时会隐藏。
+
+```text
+运行目录（须在 Git 仓库之外） [/home/alice/.local/train_watch]: 〈回车〉
+私有告警仓库（OWNER/REPO 或 GitHub URL）: alice/watcher-alerts
+接收提醒的 GitHub 用户名 [alice]: 〈回车〉
+GitHub token（隐藏输入）：〈输入自己的 token 后回车〉
+GitHub HTTP(S) 代理（留空沿用已有/环境设置，输入 - 不使用）: 〈回车〉
+任务名称（会出现在邮件中）: exp-01
+日志路径（可使用 ~）: /home/alice/runs/exp-01/train.log
+多少分钟无更新后告警（0 关闭） [60]: 〈回车〉
+正常完成标记文件路径（可留空；请填写只在成功结束时生成的文件）: 〈回车〉
+继续添加其他日志？y/N [N]: 〈回车〉
+停滞告警持续多少小时后移出监控（0 关闭） [48]: 〈回车〉
+巡检间隔（分钟，1–59） [5]: 〈回车〉
+确认安装配置和当前用户 cron？y/N [N]: y
+```
+
+按这个示例安装后，Watcher 会每 5 分钟检查一次 `exp-01` 的日志。
 
 ## 添加和移除日志
 
