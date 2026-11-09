@@ -88,6 +88,76 @@ python3 train_watch.py
 
 运行用户须能读取目标日志，并能写入运行目录。锁会跳过重叠执行。`watch.log` 需要按本机策略轮转；上面的手动方式需要自己添加 cron，交互式安装器会自动添加。
 
+## 添加或移除监控日志
+
+在服务器上进入含有 `train_watch.py` 的目录。默认操作 `~/.local/train_watch/config.json`。如果安装时用了自定义运行目录，先执行 `export TRAIN_WATCH_DIR=/absolute/runtime/path`，把路径换成 cron 使用的目录。
+
+将下面的函数复制到当前 shell。它使用巡检脚本的文件锁更新配置。
+
+```sh
+watch_log() {
+  python3 -B - "$@" <<'PY'
+import argparse
+import fcntl
+import json
+import os
+from pathlib import Path
+
+from train_watch import base_dir, expand, save_json
+
+parser = argparse.ArgumentParser()
+parser.add_argument("action", choices=("add", "remove"))
+parser.add_argument("name")
+parser.add_argument("path", nargs="?")
+args = parser.parse_args()
+
+runtime = Path(base_dir())
+config_path = runtime / "config.json"
+if not config_path.is_file():
+    parser.exit(1, "找不到监控配置：%s\n" % config_path)
+
+os.umask(0o077)
+with (runtime / ".lock").open("a") as lock:
+    fcntl.flock(lock, fcntl.LOCK_EX)
+    config = json.loads(config_path.read_text(encoding="utf-8"))
+    targets = config.get("logs") or []
+    matches = [i for i, target in enumerate(targets)
+               if (target.get("name") or os.path.basename(target.get("path") or "log")) == args.name]
+    if args.action == "add":
+        if not args.name.strip() or ":" in args.name or matches:
+            parser.error("请使用唯一的非空名称，名称不能包含冒号")
+        if not args.path:
+            parser.error("add 需要日志文件路径")
+        path = Path(os.path.abspath(expand(args.path)))
+        if not path.is_file() or not os.access(path, os.R_OK):
+            parser.error("日志文件必须存在且可读")
+        targets.append({"name": args.name, "path": str(path), "enabled": True,
+                        "start_at": "end", "stall_minutes": 60})
+    else:
+        if args.path or len(matches) != 1:
+            parser.error("remove 只接受一个已配置且唯一的任务名称")
+        targets.pop(matches[0])
+    config["logs"] = targets
+    save_json(str(config_path), config)
+    print("配置已更新：%s %s" % (args.action, args.name))
+PY
+}
+```
+
+添加日志时填写任务名称和日志路径。新目标从首次巡检时的文件末尾开始读取，默认 60 分钟无更新后告警。
+
+```sh
+watch_log add my-experiment /absolute/path/to/train.log
+```
+
+移除时填写配置中的任务名称。原始日志文件会保留。
+
+```sh
+watch_log remove my-experiment
+```
+
+变更在下次巡检时生效。可以运行 `python3 train_watch.py --dry-run` 预览。新实验请使用新名称，避免沿用同名目标的读取位置。
+
 ## 检测与恢复
 
 - 持久保存 inode、字节偏移和未完成行；处理日志轮转和截断。
